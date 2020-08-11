@@ -30,62 +30,70 @@ import java.util.stream.Stream;
 @SpringBootApplication
 public class ClientApplication {
 
+    private final UsernamePasswordMetadata credentials = new UsernamePasswordMetadata("jlong", "pw");
+    private final MimeType mimeType = MimeTypeUtils.parseMimeType(WellKnownMimeType.MESSAGE_RSOCKET_AUTHENTICATION.getString());
+
+    @Bean
+    RSocketStrategiesCustomizer strategiesCustomizer() {
+        return strategies -> strategies.encoder(new SimpleAuthenticationEncoder());
+    }
+
+    @Bean
+    SocketAcceptor socketAcceptor(
+            RSocketStrategies strategies,
+            HealthController controller) {
+        return RSocketMessageHandler.responder(strategies, controller);
+    }
+
+    @Bean
+    RSocketRequester rSocketRequester(
+            SocketAcceptor acceptor,
+            RSocketRequester.Builder builder) {
+        return builder
+                .setupMetadata(this.credentials, this.mimeType)
+                .rsocketConnector(connector -> connector.acceptor(acceptor))
+                .connectTcp("localhost", 8888)
+                .block();
+    }
+
+    @Bean
+    ApplicationListener<ApplicationReadyEvent> client(RSocketRequester client) {
+        return args ->
+                client
+                        .route("greetings")
+                        .metadata(this.credentials, this.mimeType)
+                        .data(Mono.empty())
+//                        .data(new GreetingRequest("Alibaba"))
+                        .retrieveFlux(GreetingResponse.class)
+                        .subscribe(System.out::println);
+    }
+
     @SneakyThrows
     public static void main(String[] args) {
         SpringApplication.run(ClientApplication.class, args);
         System.in.read();
     }
 
-    // client
-    private final String hostname = "localhost";
-    private final int port = 8888;
-
-    private final UsernamePasswordMetadata credentials =
-            new UsernamePasswordMetadata("jlong", "pw");
-    private final MimeType mimeType =
-            MimeTypeUtils.parseMimeType(WellKnownMimeType.MESSAGE_RSOCKET_AUTHENTICATION.getString());
-
-    @Bean
-    RSocketStrategiesCustomizer rSocketStrategiesCustomizer() {
-        return strategies -> strategies.encoder(new SimpleAuthenticationEncoder());
-    }
-
-    @Bean
-    SocketAcceptor handler(RSocketStrategies strategies, HealthController healthController) {
-        return RSocketMessageHandler.responder(strategies, healthController);
-    }
-
-    @Bean
-    RSocketRequester rSocketRequester(SocketAcceptor handler, RSocketRequester.Builder builder) {
-        return builder
-                .setupMetadata(this.credentials, this.mimeType)
-                .rsocketConnector(connector -> connector.acceptor(handler))
-                .connectTcp(this.hostname, this.port)
-                .block();
-    }
-
-    @Bean
-    ApplicationListener<ApplicationReadyEvent> client(RSocketRequester rSocketRequester) {
-        return srgs ->
-                rSocketRequester
-                        .route("greetings")
-                        .metadata(this.credentials, this.mimeType)
-                        .data(Mono.empty())
-      //                .data(new GreetingRequest("Alibaba"))
-                        .retrieveFlux(GreetingResponse.class)
-                        .subscribe(System.out::println);
-    }
-
 }
 
+@Controller
+class HealthController {
+
+    @MessageMapping("health")
+    Flux<ClientHealthState> health() {
+        var stream = Stream.generate(() -> new ClientHealthState(Math.random() > .2));
+        return Flux.fromStream(stream).delayElements(Duration.ofSeconds(1));
+    }
+}
 
 @Data
 @AllArgsConstructor
 @NoArgsConstructor
-class GreetingRequest {
-    private String name;
+class ClientHealthState {
+    private boolean healthy;
 }
 
+// DTO
 @Data
 @AllArgsConstructor
 @NoArgsConstructor
@@ -96,18 +104,6 @@ class GreetingResponse {
 @Data
 @AllArgsConstructor
 @NoArgsConstructor
-class ClientHealthState {
-    private boolean healthy;
-}
-
-@Controller
-class HealthController {
-
-    @MessageMapping("health")
-    Flux<ClientHealthState> clientHealthStateFlux() {
-        return Flux
-                .fromStream(Stream.generate(() -> new ClientHealthState(Math.random() < .8)))
-                .delayElements(Duration.ofSeconds(1));
-    }
-
+class GreetingRequest {
+    private String name;
 }

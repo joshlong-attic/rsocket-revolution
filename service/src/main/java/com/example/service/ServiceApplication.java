@@ -34,27 +34,29 @@ public class ServiceApplication {
     public static void main(String[] args) {
         SpringApplication.run(ServiceApplication.class, args);
     }
+
 }
+
 
 @Configuration
 class SecurityConfiguration {
 
-    @Bean
-    MapReactiveUserDetailsService authentication() {
-        return new MapReactiveUserDetailsService(
-                User.withDefaultPasswordEncoder().username("jlong").password("pw").roles("USER").build());
-    }
 
     @Bean
-    PayloadSocketAcceptorInterceptor authorization(RSocketSecurity security) {
+    PayloadSocketAcceptorInterceptor interceptor(RSocketSecurity security) {
         return security
-                .authorizePayload(ap -> ap.anyExchange().authenticated())
                 .simpleAuthentication(Customizer.withDefaults())
+                .authorizePayload(ap -> ap.anyExchange().authenticated())
                 .build();
     }
 
     @Bean
-    RSocketMessageHandler rSocketMessageHandler(RSocketStrategies strategies) {
+    MapReactiveUserDetailsService authentication() {
+        return new MapReactiveUserDetailsService(User.withDefaultPasswordEncoder().username("jlong").password("pw").roles("USER").build());
+    }
+
+    @Bean
+    RSocketMessageHandler messageHandler(RSocketStrategies strategies) {
         var rmh = new RSocketMessageHandler();
         rmh.getArgumentResolverConfigurer().addCustomResolver(new AuthenticationPrincipalArgumentResolver());
         rmh.setRSocketStrategies(strategies);
@@ -62,14 +64,7 @@ class SecurityConfiguration {
     }
 }
 
-
-@Data
-@AllArgsConstructor
-@NoArgsConstructor
-class GreetingRequest {
-    private String name;
-}
-
+// DTO
 @Data
 @AllArgsConstructor
 @NoArgsConstructor
@@ -80,40 +75,46 @@ class GreetingResponse {
 @Data
 @AllArgsConstructor
 @NoArgsConstructor
-class ClientHealthState {
-    private boolean healthy;
+class GreetingRequest {
+    private String name;
 }
 
-
-@Log4j2
 @Controller
+@Log4j2
 class GreetingController {
 
     @MessageMapping("greetings")
     Flux<GreetingResponse> greet(
-            RSocketRequester clientRSocket,
-            @AuthenticationPrincipal Mono<UserDetails> userDetailsMono) {
-        return userDetailsMono
+            RSocketRequester clientRSocketConnection,
+            @AuthenticationPrincipal Mono<UserDetails> user) {
+        return user
                 .map(UserDetails::getUsername)
                 .map(GreetingRequest::new)
-                .flatMapMany(gr -> greet(clientRSocket, gr));
+                .flatMapMany(gr -> this.greet(clientRSocketConnection, gr));
     }
 
     private Flux<GreetingResponse> greet(
-            RSocketRequester clientRSocket,
-            GreetingRequest request) {
+            RSocketRequester clientRSocketConnection, GreetingRequest requests) {
 
-        var out = Flux
-                .fromStream(Stream.generate(() -> new GreetingResponse("Hello, " + request.getName() + " @ " + Instant.now())))
-                .delayElements(Duration.ofSeconds(1))
-                .take(100);
-
-        var in = clientRSocket.route("health")
+        var clientHealth = clientRSocketConnection
+                .route("health")
                 .retrieveFlux(ClientHealthState.class)
                 .filter(chs -> !chs.isHealthy())
-                .doOnNext(chs -> log.info("got an unhealthy one!"));
+                .doOnNext(chs -> log.info("not healthy! "));
 
-        return out.takeUntilOther(in);
+        var greetings = Flux
+                .fromStream(Stream
+                        .generate(() -> new GreetingResponse("ni hao " + requests.getName() + " @ " + Instant.now() + "!")))
+                .take(100)
+                .delayElements(Duration.ofSeconds(1));
+
+        return greetings.takeUntilOther(clientHealth);
     }
+}
 
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+class ClientHealthState {
+    private boolean healthy;
 }
